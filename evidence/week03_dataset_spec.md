@@ -98,15 +98,17 @@
 - **缺失值（Missing Values）**：影像矩陣與標註座標無遺失值（Complete Matrix），因網路影片無實體飛控中繼資料，故不引入高度等容易缺值的 sensor metadata。
 
 ### 11. Version / Provenance
-- **Dataset Version**：`v0.2.0-yt-curated`。
-- **維護者**：國立中興大學 詹永寬實驗室 - 黃柏瑜。
-- **產出流程**：YouTube 4K/1080p 影片下載 $\rightarrow$ 2 FPS 抽幀取樣 $\rightarrow$ 畫面周邊 OSD 裁切過濾 $\rightarrow$ CVAT 人工標註匯出 $\rightarrow$ Group Split 驗證。
-- **重現性**：保留每張影格對應之 YouTube Video ID 與精確時間戳記（Timestamp）清單，隨機亂數種子固定 `seed = 42`。
+- **Dataset version**：`v0.2.0-yt-curated`（詹永寬實驗室 - 黃柏瑜）
+- **Extract date**：2025-01 至 2026-09
+- **Cleaning rule**：自 YouTube 視訊以 2 FPS 抽幀取樣 $\rightarrow$ 剔除無效退化框（寬度 $\le 2$ 像素）$\rightarrow$ 裁切畫面外圍 16 像素以去除頻道浮水印與 OSD 捷徑特徵
+- **Label version**：`vehicle_annotation_v1.0`（CVAT 雙人覆核標註）
+- **Split rule / seed**：Group Split by `video_id`（Train: 10 支、Val: 3 支、Test: 3 支，Group Overlap = 0）/ `random_seed = 42`
 
 ### 12. Known Limitations
-- **缺乏真實物理溫標（Non-Radiometric）**：YouTube 影片為後製壓縮之 8-bit RGB/灰階影像，缺乏紅外線感測器直出之 14-bit 絕對溫度值（Radiometric Temperature），無法利用實體攝氏溫差進行嚴格物理過濾。
-- **視角高度未標定**：無機載飛控高度中繼資料，無法精確將像素長寬等比例換算為公尺，限制了幾何尺度的物理驗證。
-- **不主張聲明**：本資料集訓練之系統**不主張**在完全無熱對比（如泡水拋錨冷車）或重度濃霧視線受阻時仍能維持高檢測率。
+- **Limitation**：缺乏原生 14-bit 物理輻射溫標（Non-Radiometric）、無精確機載高度中繼資料，且極端天候與「熱交叉現象」樣本涵蓋不足。
+- **Evidence / 原因**：資料來源為 YouTube 二次壓縮之 8-bit 視訊，已遺失原始熱像儀絕對溫度數值；且航拍視訊中環境溫差小於 1°C 的清晨/黃昏樣本僅佔約 1.8%。
+- **影響**：模型無法使用真實物理攝氏溫度門檻進行硬性過濾，且在清晨地表與車輛熱平衡時可能發生對比度不足的系統性漏檢。
+- **因此不主張**：本資料集訓練之系統**不主張**在完全無熱對比（如泡水拋錨冷車）、重度濃霧視線受阻，或在無光學變焦的超高空（> 150m）環境下仍能維持高檢測率。
 
 ---
 
