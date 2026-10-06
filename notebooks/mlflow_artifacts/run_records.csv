@@ -1,0 +1,4 @@
+run_name,model_type,seed,threshold_policy,feature_set,data_version,split_type,group_key,primary_map50,failure_tiny_miss_rate,failure_fp_per_frame,runtime_latency_ms,fps,artifact
+baseline1_otsu_cca,Otsu_Thresholding_CCA,42,Global_Otsu_Bimodal,['image_array_640x512_gray'],v0.2.0-yt-curated,group,video_id,0.214,0.718,8.42,4.2,238,mlflow_artifacts\failure_cases.csv
+baseline2_tophat_adaptive,Morphological_TopHat_Adaptive,42,Local_Adaptive_Val_Tuned,['image_array_640x512_gray'],v0.2.0-yt-curated,group,video_id,0.528,0.463,2.15,11.8,85,mlflow_artifacts\failure_cases.csv
+candidate_yolov11n,YOLOv11n_PyTorch,42,Confidence_0.25_NMS_0.45,['image_array_640x512_gray'],v0.2.0-yt-curated,group,video_id,0.812,0.142,0.31,8.6,116,mlflow_artifacts\failure_cases.csv
