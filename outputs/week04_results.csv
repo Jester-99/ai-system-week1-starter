@@ -1,0 +1,4 @@
+﻿method,dataset_information,val_AP50,test_AP50 (primary),test_miss_rate (failure),test_recall,test_precision,false_alarms_per_100_frames,val_threshold,runtime_ms_per_frame,complexity,note
+B1 Otsu+CCA,640x512 IR pixels only; date split v0.2,0.0004,0.0081,0.9534,0.0466,0.0703,244.4268,1.3983,6.0571,Low,W2 current / naive baseline
+B2b HOG+GB,640x512 IR pixels only; date split v0.2,0.3242,0.3637,0.5496,0.4504,0.4698,201.4331,0.8299,86.2004,Low-Mid,Credible simple baseline (classifier chosen on Val)
+C YOLO11n,640x512 IR pixels only; date split v0.2,0.7186,0.7832,0.2929,0.7071,0.8314,56.8471,0.2504,56.8572,Mid,"Candidate; COCO-pretrained, fine-tuned 20 epochs on Train"

@@ -1,5 +1,5 @@
 <!DOCTYPE html>
-<html lang="zh-TW">
+<html lang="zh-Hant">
 <head>
 <meta charset="UTF-8">
 <title>Week 3 Mini Defense</title>
@@ -62,46 +62,16 @@
 </style>
 </head>
 <body>
-
-<h1>Week 3 Mini Defense: Dataset Spec & Audit</h1>
-<div class="meta-info">
-  <strong>學號：</strong>7114029015 &nbsp;|&nbsp; 
-  <strong>姓名：</strong>黃柏瑜 &nbsp;|&nbsp; 
-  <strong>單位：</strong>國立中興大學 詹永寬實驗室 &nbsp;|&nbsp; 
-  <strong>專題：</strong>紅外線無人機高空影像交通工具偵測（YOLO）
-</div>
-
-<div class="qa-card">
-  <div class="question">Q1: 你的 Test set 要模擬哪一種 Unknown？</div>
-  <div class="answer">
-    我的 Test set 要模擬<strong>「全新 YouTube 視訊片段、未見過的地理空域、以及不同無人機相機感測器的泛化能力（Unseen Video Clips & Novel Aerial Scenes）」</strong>。在實際部署情境中，無人機永遠是在全新的道路或空域執行巡航，因此 Test set 必須是模型在訓練期間完全未曾看過的新影片來源。
-  </div>
-</div>
-
-<div class="qa-card">
-  <div class="question">Q2: 為什麼選擇目前的 Split Strategy？</div>
-  <div class="answer">
-    我選擇<strong>「Group Split by video_id（依 YouTube 來源視訊切分）」</strong>，嚴格禁止 Random Split。因為無人機航拍是每秒 30 幀的連續視訊串流，相鄰影格間隔僅 0.03 秒，背景地形與車輛位置幾乎一模一樣。如果使用隨機打散（Random Split），測試集與訓練集將高度共享相同的道路背景，產生嚴重的<strong>時空序列資訊洩漏（Temporal Split Leakage）</strong>，評測分數會虛假高估。依據 video_id 徹底隔開，才能確保測試集是真實的未知評估。
-  </div>
-</div>
-
-<div class="qa-card">
-  <div class="question">Q3: 你的 Dataset 中最可能造成 Leakage 的欄位或資料流程是什麼？</div>
-  <div class="answer">
-    最可能造成 Leakage 的環節有兩個：
-    <ol>
-      <li><strong>資料流程上的 Split Leakage</strong>：同一支 YouTube 視訊的影格跨集合洩漏，讓模型背下靜態路面熱特徵。</li>
-      <li><strong>影像畫面上的 Shortcut Leakage（捷徑學習）</strong>：YouTube 視訊角落常帶有固定的頻道浮水印（Logo）或飛控 OSD 儀表。如果車輛常出現在某些特定相對位置，模型可能會將浮水印當成預測線索，因此必須在前處理將邊緣裁切遮罩。</li>
-    </ol>
-  </div>
-</div>
-
-<div class="qa-card">
-  <div class="question">Q4: 目前 Dataset 最重要的 Coverage Limitation 是什麼？</div>
-  <div class="answer">
-    目前最大的限制是<strong>「缺乏原生 14-bit 輻射溫度數據（Radiometric Data）與無人機實機飛行高度」</strong>。因為資料來源是 YouTube 經過二次編碼壓縮的 8-bit 視訊，已經丟失了熱像儀直出的真實物理攝氏溫度，且無法取得精確高度將像素長寬換算成公尺。因此本模型只能根據相對明暗的熱特徵進行辨識，無法宣稱具備以「實體溫度門檻」過濾虛警的能力。
-  </div>
-</div>
-
+<h1>Week 3 Mini Defense: Dataset Spec &amp; Audit</h1>
+<div class="meta-info">學號：7114029015 &nbsp;|&nbsp; 姓名：黃柏瑜 &nbsp;|&nbsp; 專題：高空紅外線無人機影像車輛偵測（YOLO） &nbsp;|&nbsp; Dataset：HIT-UAV（pilot）</div>
+<div class="qa-card"><div class="question">Q1: 你的 Test set 要模擬哪一種 Unknown？</div>
+<div class="answer">我的 Test set 模擬<strong>「未見過的新飛行任務日」</strong>，所以採用依日期的 Group／Time Split。具體切法：最後兩個拍攝日（2021-01-21、01-23，628 張、2,489 個車輛框，日夜都有）當 Test，01-19 當 Val，其餘 6 天當 Train。</div></div>
+<div class="qa-card"><div class="question">Q2: 為什麼選擇目前的 Split Strategy？</div>
+<div class="answer">同一段飛行影片的相鄰影格只差約 2 秒，背景幾乎相同，不是 i.i.d.。Audit 顯示官方 split 的 Test 影像 <strong>100%</strong> 與 Train 共用同一段飛行，<strong>31.3%</strong> 在 Train 中有相鄰影格；Random Split 也有相同問題。部署時無人機一定在新的一天起飛，所以按日期整天切開，Test 放最後的日期。驗證：flight_group overlap = 0。</div></div>
+<div class="qa-card"><div class="question">Q3: 你的 Dataset 中最可能造成 Leakage 的欄位或資料流程是什麼？</div>
+<div class="answer"><ol><li><strong>資料流程</strong>：直接沿用 HIT-UAV 官方 split，同一飛行段會跨 Train／Test。</li>
+<li><strong>欄位</strong>：檔名與 <code>serial</code> 編碼了拍攝順序、高度、日夜，不能進模型；<code>DontCare</code> 是看過答案才畫的區域，只能在評估時忽略，不能拿來遮 Input。</li></ol></div></div>
+<div class="qa-card"><div class="question">Q4: 目前 Dataset 最重要的 Coverage Limitation 是什麼？</div>
+<div class="answer">目前只涵蓋<strong>冬季、非雨天、單一 FLIR 相機、60–130 m、以中大型小客車為主</strong>，沒有夏季與熱交叉時段，微小車輛（&lt; 16×16 px）只有 2.5%。因此結果不能直接泛化到微小目標偵測、夏季或雨霧天候、或其他相機與 YouTube 壓縮影像。</div></div>
 </body>
 </html>

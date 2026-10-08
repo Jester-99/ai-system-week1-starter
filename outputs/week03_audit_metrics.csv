@@ -1,0 +1,17 @@
+﻿audit_item,value
+images,2898.0
+annotations_all_classes,24899.0
+vehicle_boxes (Car+OtherVehicle),7459.0
+other_vehicle_pct_of_vehicle,2.0
+images_with_vehicle,1424.0
+images_without_any_annotation,32.0
+missing_values,0.0
+duplicate_boxes,0.0
+out_of_bound_boxes,0.0
+degenerate_vehicle_boxes,0.0
+tiny_vehicle_pct (<16x16),2.5
+medium_plus_vehicle_pct (>=32x32),75.5
+flight_groups,264.0
+official_test_same_group_in_train_pct,100.0
+official_test_adjacent_frame_in_train_pct,31.3
+v02_group_overlap_train_test,0.0

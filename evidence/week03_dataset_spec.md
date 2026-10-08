@@ -1,133 +1,226 @@
-# Week 3 - Dataset Spec v0.2 
-# !重要備註!已更新 Week 1&2 - 內容改成我的論文研究
+# Week 3 - Dataset Spec v0.2
+
 學號：7114029015
 姓名：黃柏瑜
-專題名稱：紅外線無人機高空影像交通工具偵測（YOLO）
+專題名稱：高空紅外線無人機影像車輛偵測（YOLO，邊緣端即時）
+
+> 本文件所有數字都來自 `notebooks/week03_dataset_audit.ipynb` 的實際輸出。
 
 ---
 
 ## A. 資料怎麼形成
 
 ### 1. Source / Owner
-- **資料來源**：網路 YouTube 公開無人機長波紅外線（LWIR / Thermal IR）航拍影片（透過合法合理使用原則進行學術研究檢索與取樣抽幀）。
-- **擁有者 / 維護單位**：國立中興大學 詹永寬實驗室 - 黃柏瑜。
-- **擷取日期**：2025 年 1 月至 2026 年（現今）。
-- **授權與使用條款**：依據學術研究之合理使用（Fair Use）原則，影像僅供離線訓練與學術評測，不作商業發布。
 
-### 2. Unit Alignment
-- **W2 Unit of Analysis**：單張高空紅外線熱成像影格（Single IR Frame）。
-- **Dataset 儲存型態**：
-  - 影像檔案：每張影像代表自 YouTube 視訊抽幀出的獨立影格（解析度統一縮放/裁切為 640×512，灰階 PNG/JPG 格式）。
-  - 標註檔案：標準 YOLO txt 格式，每列代表一個交通工具目標的外接矩形框，與影像透過 `frame_id` 嚴格一對一對齊。
-- **對齊性確認**：一筆 Observation 即為單一影格，符合 Week 2 定義的影格層決策點。
+| 項目 | 內容 |
+| --- | --- |
+| Source | HIT-UAV: A high-altitude infrared thermal dataset for UAV-based object detection（Suo et al., *Scientific Data* 10, 227, 2023） |
+| 形成方式 | 研究團隊以 DJI Zenmuse XT2（FLIR 長波紅外線 640×512、25 mm 鏡頭）實際飛行錄影，7 FPS 影片每 15 frames 取 1 張，共 2,898 張；3 位標註者以修改版 LabelImg 人工標註並互相檢查 |
+| Owner / Provider | 原作者團隊（Jiashun Suo, Tianyi Wang 等）；GitHub `suojiashun/HIT-UAV-Infrared-Thermal-Dataset` |
+| 本研究取得的部分 | `normal_json/annotations/{train,val,test}.json`（標準 bbox）；影像本體尚未下載 |
+| Extract / Download date | 2026-10-08 |
+| License / Permission | GitHub repo LICENSE 為 CC BY 4.0（第三方鏡像站標為 CC0，以原 repo 為準）；學術使用需引用原論文 |
+
+注意：JSON 只是檔案格式，Source 是「原作者團隊的實機飛行錄影 + 人工標註」。
+
+### 2. Unit Alignment（承接 W2，不修改 W2 v0.2）
+
+| W2 定義 | Dataset 對應 | 是否對齊 |
+| --- | --- | --- |
+| Unit：單張高空 IR 影格 | 一筆 `images` 紀錄 = 一張 640×512 影格（2,898 張，解析度 100% 為 640×512） | 對齊 |
+| Input：即時單通道熱影像矩陣 | 影像 JPG（8-bit，非輻射溫度值） | 部分對齊：沒有原始 14-bit 溫度 |
+| Input（後處理）：飛行高度、焦距 | 檔名編碼 `altitude_m`（60–130 m）、`angle_deg`（30–90°）；焦距固定 25 mm | 對齊（可做 W2 規劃的尺寸過濾） |
+| Target：目標 bbox + class | `annotation.bbox` + `category_id`；`Car` + `OtherVehicle` → `vehicle` | 對齊 |
+| W2 Target class 含 `person` | 本研究 Target 已縮為只做 `vehicle`；`Person` 標註保留但不作為 Target | **落差**：需回到 W2 註記範圍調整 |
+| W2 假設「目標常 < 16×16 px」 | 車輛框中 tiny 只有 2.5%（見 Finding 2） | **不對齊** |
 
 ### 3. Time Range
-- **視訊蒐集區間**：涵蓋 2025 年至 2026 年間上傳之 16 支不同無人機拍攝視訊片段（Video Clips）。
-- **時段涵蓋**：夜間道路巡檢（佔 55%）、日間城市/公路巡航（佔 35%）、黃昏/清晨環境（佔 10%）。
+
+- 拍攝日期：2020-12-17 至 2021-01-23，共 9 個拍攝日（`date_captured`）。
+- 季節：只有冬季（12 月–1 月）。
+- 日夜：夜間 1,981 張（68.4%）、白天 917 張（31.6%）。2020-12-17、2021-01-14、2021-01-18 這 3 天只有夜間資料。
 
 ### 4. Fields
-| 欄位名稱 | 型態 | 角色 | 決策當下可得性 | 說明 |
-| :--- | :--- | :--- | :--- | :--- |
-| `frame_id` | String | ID Key | 是 | 影格唯一識別碼（如 `yt_clip03_f0120`） |
-| `video_id` | String | Group Key | 是 | YouTube 來源視訊識別碼（用於 Group Split 隔離） |
-| `image_array` | Array (640, 512) | Input | 是 | 自視訊解碼之單通道/三通道灰階影像矩陣 |
-| `class_id` | Int | Target | 否（事後標註） | 物件類別代碼（固定為 `0: vehicle`） |
-| `bbox_x_center` | Float | Target | 否（事後標註） | 歸一化目標中心點 X 座標 $[0, 1]$ |
-| `bbox_y_center` | Float | Target | 否（事後標註） | 歸一化目標中心點 Y 座標 $[0, 1]$ |
-| `bbox_width` | Float | Target | 否（事後標註） | 歸一化目標寬度 $[0, 1]$ |
-| `bbox_height` | Float | Target | 否（事後標註） | 歸一化目標高度 $[0, 1]$ |
-| `channel_watermark` | Image Region | 禁用（Leakage）| 否（視訊後製） | YouTube 頻道浮水印或 UI 疊加層，推論時嚴禁作為特徵 |
+
+| 欄位 | 來源 | 角色 | 決策當下可得？ | 說明 |
+| --- | --- | --- | --- | --- |
+| image pixels | JPG | **Input** | 是 | 640×512 單通道熱影像 |
+| `altitude_m` | 檔名第 2 欄 | 後處理 only | 是（飛控即時） | 只用於物理尺寸過濾，不進神經網路 |
+| `angle_deg` | 檔名第 3 欄 | 後處理 / 分組評估 | 是（雲台即時） | 不進神經網路 |
+| `daynight` | 檔名第 1 欄（0=日、1=夜） | 分組評估 | 可推得 | 只用來分組回報 Recall |
+| `weather` | 檔名第 4 欄 | Coverage 檢查 | — | 全部為 `0`（只有非雨天） |
+| `serial` | 檔名第 5 欄 | ID／順序 | 否 | 取樣序號，編碼拍攝順序，禁止當特徵 |
+| `date_captured` | JSON | **Split key** | 否 | 用於切分 |
+| `flight_group` | 衍生：date + daynight + altitude + angle | **Group key**（影片 proxy） | 否 | 資料集沒有 `video_id`，以此近似「同一段飛行影片」 |
+| `bbox` `[x, y, w, h]` | 人工標註 | **Target** | 否（事後標註） | 像素座標 |
+| `category_id` | 人工標註 | **Target** | 否 | 0 Person／1 Car／2 Bicycle／3 OtherVehicle／4 DontCare |
+| `official_split` | JSON 所在檔案 | 禁用 | 否 | 官方切分有洩漏（Finding 1） |
+
+部署時拿不到的欄位：`bbox`、`category_id`、`date_captured`、`serial`、`official_split`，全部不可作為 Input。
 
 ### 5. Label / Codebook
-- **Target 定義**：高空俯視或大傾角視野下的**交通工具類別（`vehicle`）**，包含轎車（Sedan）、休旅車（SUV）、卡車（Truck）及行駛中的機車等機動車輛。
-- **標註機制**：由詹永寬實驗室研究員利用 CVAT 進行人工精細邊界框標註，並由第二人抽檢驗證。
-- **Codebook 規範**：
-  - 熱源判定：以車輛引擎蓋、排氣管散熱或車身金屬反光形成的高對比熱輪廓為基準標註邊界框。
-  - 熄火冷車：若車輛已長時間停放且與地面無可辨溫差（缺乏熱特徵），不予標註，避免模型混淆。
-  - 密集車流：若車輛間距極小，仍依車體結構各自獨立框選，重疊區域不刻意合併。
-- **已知標籤誤差**：地表大型金屬設施（如變壓箱、反光鐵皮）偶有約 2.5% 邊界雜訊。
+
+- **Target**：影格中每一台機動車輛的 bbox 與類別 `vehicle`。
+- **Label field**：`category_id`，映射規則 `vehicle_map_v0.2`：
+
+| 原始類別 | 數量 | v0.2 處理 |
+| --- | ---: | --- |
+| Car | 7,311 | → `vehicle` |
+| OtherVehicle | 148 | → `vehicle`（只佔車輛框 2.0%） |
+| Bicycle | 4,980 | 非 Target，訓練時不標為 vehicle |
+| DontCare | 148 | 評估時設為忽略區，不算 FP/FN |
+| Person | 12,312 | 非 Target |
+
+- **Label source**：原作者 3 人人工標註並互相檢查（Existing human label），本研究沒有重新標註。
+- **Codebook 缺口**：原論文沒有給 `OtherVehicle` 的定義，也沒有說明**機車**要標成 Bicycle 還是 OtherVehicle。若機車被標成 Bicycle，依 v0.2 映射會被當成「非車輛」。
+- **Known label error**：自動檢查沒有發現重複框、越界框、退化框（w 或 h ≤ 2 px），也沒有發現 area ≠ w×h 的紀錄；長寬比 > 4 的車輛框有 18 個，需目視複核。人工錯標率**未知**，需在拿到影像後抽樣複核（TODO）。
 
 ### 6. Inclusion / Exclusion
-- **納入條件（Include）**：
-  - 攝影角度介於 45° 至 90°（俯視/大傾角）的高空無人機視角。
-  - 影像中目標具備清楚可辨之熱特徵或輪廓線。
-- **排除條件（Exclude）**：
-  - YouTube 視訊畫質低於 720p、壓縮區塊效應（Macroblocking）嚴重失真之影格。
-  - 畫面視角包含大面積無效天空或無人機起降地面極低空影像。
-  - 包含大面積頻道片頭文字特效或全螢幕動畫覆蓋之影格。
-- **偏差影響評估**：排除嚴重壓縮失真的影像能保障訓練品質，但限制了模型對超低頻寬劣化串流的容忍度。
+
+- **Include**：HIT-UAV 全部 2,898 張影格，包含沒有車輛的影格（1,474 張），作為負樣本用來檢驗誤報。
+- **Exclude**：v0.2 不排除任何影格。32 張完全沒有標註的影格先保留為負樣本，待拿到影像後目視確認不是漏標。
+- **排除理由**：目前只有標註檔，無法用畫質判斷排除；先不排除，避免為了讓資料變漂亮而丟掉困難樣本。
+- **可能 Bias**：資料集本身已只收非雨天（`weather` 全為 0），而且原作者的取樣方式（每 15 frames 取 1 張、部分飛行段只留 2–10 張）可能已經過濾掉模糊或困難畫面。
 
 ---
 
 ## B. 證據怎麼驗證
 
 ### 7. Population / Coverage
-- **Target Population**：現實世界中無人機在高空對各類道路、停車場、樞紐交會處進行交通監控時出現的所有機動車輛。
+
+- **Target Population**：無人機在 60–130 m 高空、以長波紅外線巡檢道路與停車場時，畫面中出現的所有機動車輛，日夜、四季、各種天候都包含在內。
 - **Observed Coverage**：
-  - 場景涵蓋：高速公路車流、市區十字路口、戶外露天停車場、夜間鄉村公路。
-  - 光熱環境：深色熱（White-Hot）與淺色熱（Black-Hot）兩種熱成像極性模式。
+  - 單一團隊、單一台相機（FLIR 640×512、25 mm）、9 個冬季拍攝日。
+  - 高度 60–130 m（8 個等級）、俯角 30–90°（7 個等級）。
+  - 日／夜都有，夜間佔 68.4%；車輛框 65.9% 來自夜間（4,914 / 7,459）。
+  - 場景包含校園、停車場、道路、操場（依原論文描述，metadata 沒有場景欄位）。
 - **Missing Coverage**：
-  - 缺乏暴雪、暴雨天候下的車輛熱衰減樣本。
-  - 缺乏林道與密林樹冠遮蔽下的隱蔽車輛樣本。
-- **外推限制**：本資料集訓練之模型，不主張可直接泛化至重度植被遮蔽或越野山區的偽裝車輛偵測。
+  - 沒有雨、霧、雪（weather 只有 `0`）。
+  - 沒有夏季，也沒有熱交叉時段。冬季車輛與地面溫差通常較大，偵測可能比夏季容易。
+  - 沒有 > 130 m 的高度；tiny 車輛（< 16×16）只有 184 個框。
+  - 大型車與機車的樣本極少，或者類別定義不清（OtherVehicle 只有 148 個）。
+  - 沒有其他相機型號，也沒有 YouTube 類型的二次壓縮影像。
+- **對結論的影響**：在此資料上得到的結果，只能代表「冬季、非雨天、同型 FLIR 相機、≤ 130 m」條件下的中大型車輛偵測。
 
 ### 8. Train / Validation / Test Rule
-- **Test 模擬的未知**：**「全新 YouTube 視訊剪輯片段（未見過的拍攝設備、全新拍攝地理環境與相機感測器特性）」**。
-- **Split 策略**：**Group Split by `video_id`（嚴禁依 Frame 進行 Random Split）**。
-- **具體分配規則**：
-  - 共採集 16 支獨立 YouTube 影片片段，抽幀取得 3,500 張影格。
-  - **Train (約 65%)**：Video 01 至 10（共 2,275 張），涵蓋日間與夜間市區/高速公路。
-  - **Val (約 15%)**：Video 11 至 13（共 525 張），涵蓋郊區與夜間公路。
-  - **Test (約 20%)**：Video 14 至 16（共 700 張），完全獨立的停車場與複雜立體交會處視訊。
-- **選擇理由**：同一支視訊中的相鄰影格相隔僅 0.03–0.2 秒，背景高度相同；若採用隨機打散切分，Test 集將偷看 Train 集完全相同的道路背景，造成評測準確率虛高。
+
+- **Test 模擬的未知**：**未見過的新飛行任務日**。部署時無人機一定是在新的一天、新的一次起降、新的光照與溫度條件下飛行，所以 Test 不能和 Train 共用同一次飛行。
+- **Split 決策樹**：
+
+| 問題 | 答案 | 理由 |
+| --- | --- | --- |
+| Q1 Test 是未來資料嗎？ | 是 | 模型是先訓練再部署到之後的任務 |
+| Q2 同一 group 會重複出現嗎？ | 是 | 每個 `flight_group` 平均 11 張、最多 150 張連續取樣影格 |
+| Q3 樣本近似 i.i.d.？ | 否 | 同一段飛行的相鄰影格只差約 2 秒，背景幾乎相同 |
+
+- **最終 Split**：依 `date_captured` 做 **Group + Time Split**，不使用官方 split，也不使用 random split。
+
+| Split | 日期 | 影像 | 含車影像 | vehicle 框 | 日／夜影像 |
+| --- | --- | ---: | ---: | ---: | --- |
+| Train | 2020-12-17、2021-01-14、15、16、18、20 | 1,954（67.4%） | 617 | 3,707 | 466 / 1,488 |
+| Val | 2021-01-19 | 316（10.9%） | 310 | 1,263 | 148 / 168 |
+| Test | 2021-01-21、2021-01-23（最後兩天） | 628（21.7%） | 497 | 2,489 | 303 / 325 |
+
+- **檢查結果**：Train∩Test 的 flight_group overlap = 0，日期 overlap = 0；Test 影像在 Train 中有相鄰取樣影格的比例 = 0.0%。
+- **選擇理由**：Test 取最後兩天，同時滿足「未來」與「新飛行」。這兩天都有日／夜資料，可以分開回報結果。Val 選 01-19 也是因為它日夜都有。
 
 ### 9. Leakage Risks
-- **Split Leakage（同視訊影格跨集合洩漏）**：
-  - *風險*：同一支 YouTube 影片的影格若同時分佈於 Train 與 Test，模型只需記住靜態路面熱特徵就能抓出車輛。
-  - *預防*：以 `video_id` 為分組鍵進行強制隔離，確保 Test 集的影片在訓練時完全未見。
-- **Shortcut Leakage（頻道浮水印與 UI 捷徑學習）**：
-  - *風險*：特定 YouTube 影片角落帶有固定頻道 Logo、時間碼或 OSD 飛行儀表，若車輛恰好出現在固定相對位置，模型可能學習到浮水印特徵。
-  - *預防*：在前處理階段統一對畫面邊緣 OSD 區域進行邊界裁切（Crop）或黑邊遮罩，消除捷徑特徵。
-- **Preprocessing Leakage（前處理資訊洩漏）**：
-  - *風險*：對不同 YouTube 影片來源進行全域對比度增強時，使用全資料集統計值。
-  - *預防*：所有對比度正規化（如 CLAHE）均以「單張影格自適應」進行，不跨影格與跨集合共享參數。
+
+| 類型 | 本資料中的具體來源 | 預防方式 |
+| --- | --- | --- |
+| **Split Leakage** | 官方 split 中 264 個 flight_group 有 240 個跨 split；官方 Test 100% 的影像在 Train 有同一段飛行，31.3% 有相鄰取樣影格（約 2 秒內） | 改用日期 Group／Time Split，group overlap = 0 |
+| **Metadata／檔名 Leakage** | 檔名編碼日期順序、高度、角度、日夜；`serial` 與拍攝順序相關 | 模型 Input 只用像素；檔名欄位只用於切分與分組報告 |
+| **Target-derived** | `DontCare` 是標註者看完答案後才畫的區域；若用它遮掉 Test 影像，等於提前知道困難位置 | DontCare 只在評估時忽略，不能在推論前遮罩 Input |
+| **Tuning Leakage** | 用 Test 調 NMS、信心度門檻，或依 altitude 調尺寸過濾門檻 | 門檻只在 Val（01-19）上搜尋，Test 鎖定 |
+| **Preprocessing Leakage** | 全資料計算影像 mean/std 正規化或 anchor 聚類（YOLO autoanchor 會掃 label 尺寸） | 先切分；normalization 統計值與 anchor 只用 Train fit，再套到 Val／Test |
 
 ### 10. Quality Issues
-- **YouTube 視訊壓縮噪訊（Compression Artifacts）**：高壓縮比導致微小車輛邊緣產生塊狀效應（Block artifacts），造成 5.2% 的微小目標輪廓模糊。
-- **尺寸跨度懸殊**：微小車輛（$< 16\times16$ 像素）佔 38.6%，中型車輛（$16\times16 \sim 32\times32$）佔 42.1%，大型卡車/巴士（$> 32\times32$）佔 19.3%。
-- **缺失值（Missing Values）**：影像矩陣與標註座標無遺失值（Complete Matrix），因網路影片無實體飛控中繼資料，故不引入高度等容易缺值的 sensor metadata。
+
+| 檢查 | 結果 |
+| --- | --- |
+| Missing values | 0（影像與標註欄位皆無缺值） |
+| Duplicate filename／image id／serial | 0／0／0 |
+| Duplicate boxes（同影像同座標） | 0 |
+| Out-of-bound boxes | 0 |
+| Degenerate vehicle boxes（w 或 h ≤ 2 px） | 0 |
+| 無任何標註的影像 | 32 張 |
+| 無車輛的影像 | 1,474 張（50.9%），其中 2020-12-17 整天 587 張都沒有車 |
+| 車輛類別不平衡 | Car 7,311 vs OtherVehicle 148（2.0%） |
+| 尺度分布 | tiny < 16² 為 2.5%、small 16²–32² 為 22.1%、≥ 32² 為 75.5%；車輛框邊長中位數 46.8 px |
+| 近重複 | 同一 flight_group 的連續取樣影格（約 2 秒間隔）屬於近重複，以 Group Split 處理 |
+
+**目前最重要的 Quality Risk**：資料本身很乾淨，風險不在髒資料，而在**資料分布和研究主張不一致**，也就是 tiny 目標太少（見 Finding 2）。
 
 ### 11. Version / Provenance
-- **Dataset version**：`v0.2.0-yt-curated`（詹永寬實驗室 - 黃柏瑜）
-- **Extract date**：2025-01 至 2026-09
-- **Cleaning rule**：自 YouTube 視訊以 2 FPS 抽幀取樣 $\rightarrow$ 剔除無效退化框（寬度 $\le 2$ 像素）$\rightarrow$ 裁切畫面外圍 16 像素以去除頻道浮水印與 OSD 捷徑特徵
-- **Label version**：`vehicle_annotation_v1.0`（CVAT 雙人覆核標註）
-- **Split rule / seed**：Group Split by `video_id`（Train: 10 支、Val: 3 支、Test: 3 支，Group Overlap = 0）/ `random_seed = 42`
+
+| 項目 | 內容 |
+| --- | --- |
+| Dataset version | `hituav-vehicle-v0.2`（本研究映射版） |
+| Upstream version | HIT-UAV JSON `info.version = 1.0`，GitHub `main` 分支 `normal_json/annotations` |
+| Extract date | 2026-10-08 |
+| Cleaning rule | 不刪任何影格；`Car`、`OtherVehicle` → `vehicle`；`DontCare` → ignore；`Bicycle`、`Person` → 非 Target |
+| Label version | 原作者人工標註（未修改）＋ `vehicle_map_v0.2` |
+| Split rule / seed | 依 `date_captured`：Test = 20210121、20210123；Val = 20210119；其餘為 Train。規則是確定性的，不需要 random seed |
+| 重現方式 | 執行 `notebooks/week03_dataset_audit.ipynb`，若本機沒有資料會自動從 GitHub 下載 JSON |
+| 停用的舊版 | `data/v0.2.0-yt-curated/manifest.csv`、`data/datagenerate.py`（隨機生成，非真實資料） |
 
 ### 12. Known Limitations
-- **Limitation**：缺乏原生 14-bit 物理輻射溫標（Non-Radiometric）、無精確機載高度中繼資料，且極端天候與「熱交叉現象」樣本涵蓋不足。
-- **Evidence / 原因**：資料來源為 YouTube 二次壓縮之 8-bit 視訊，已遺失原始熱像儀絕對溫度數值；且航拍視訊中環境溫差小於 1°C 的清晨/黃昏樣本僅佔約 1.8%。
-- **影響**：模型無法使用真實物理攝氏溫度門檻進行硬性過濾，且在清晨地表與車輛熱平衡時可能發生對比度不足的系統性漏檢。
-- **因此不主張**：本資料集訓練之系統**不主張**在完全無熱對比（如泡水拋錨冷車）、重度濃霧視線受阻，或在無光學變焦的超高空（> 150m）環境下仍能維持高檢測率。
+
+| Limitation | Evidence | 影響 | 因此不主張 |
+| --- | --- | --- | --- |
+| 微小車輛樣本不足 | tiny（< 16×16）只有 184 框（2.5%），其中 130 m 也只佔 9.5% | 無法可靠驗證 W2 的 tiny-object 指標（IoU ≥ 0.3 輔助驗收） | 不主張模型能偵測 < 16×16 px 的車輛 |
+| 只有冬季、非雨天 | 9 個拍攝日都在 12–1 月；weather 全為 0 | 冬季溫差大，結果可能偏樂觀 | 不主張適用夏季、熱交叉、雨霧雪 |
+| 單一相機、無原始溫度 | 只有 8-bit JPG，同一台 FLIR 640×512 | 無法用攝氏溫度門檻；換相機可能掉分 | 不主張可直接遷移到其他熱像儀或 YouTube 壓縮影像 |
+| 車輛子類別定義不清 | OtherVehicle 148 框、無定義；機車歸類未知 | 「vehicle」實際上主要是小客車 | 不主張能偵測大型車與機車 |
+| 場景未知 | metadata 沒有地點欄位 | 日期切分無法保證 Test 是全新地點，同一校園可能在不同天重複出現 | 不主張已驗證「全新地理場景」泛化 |
 
 ---
 
-## C. Dataset Audit Summary
+## C. Dataset Audit Summary（Problem → Evidence → Impact → Decision）
 
-### 1. Quality Finding
-- **Problem**：YouTube 視訊壓縮帶來的區塊噪聲，使極遠景的微小車輛出現邊界模糊與退化框。
-- **Evidence**：經 Audit 掃描 3,500 張影格，檢測出 8 筆長寬小於等於 2 像素的邊界框，且 1080p 影片在 640 解析度縮放下有 4.1% 目標邊界模糊。
-- **Impact**：小於 2 像素的微小雜訊框會使 YOLO 的 Bounding Box 回歸損失產生數值不穩定。
-- **Decision**：在前處理清洗腳本中設定硬性門檻：長寬小於 3 像素之標註一律剔除，並引入自適應銳化濾波增強邊緣。
+### Finding 1 — Leakage / Split Risk：官方 Split 跨飛行段洩漏
+- **Problem**：HIT-UAV 官方 train/val/test 是依影格切分。同一段飛行影片的連續取樣影格分散在不同 split。
+- **Evidence**：264 個 flight_group 中有 240 個跨越 2 個以上 split；官方 Test 579 張影像 100% 能在 Train 找到同一 flight_group，31.3% 在 Train 有相鄰取樣影格（serial 差 1，約 2 秒），49.4% 的 serial 差 ≤ 2。
+- **Impact**：Test 只是在測「同一段影片的下一張」，模型可以靠背景記憶得分，分數會高估部署到新任務日的表現。
+- **Decision**：不使用官方 split，改用依日期的 Group／Time Split。結果是 group overlap = 0、date overlap = 0、相鄰影格比例 0.0%。W4 baseline 一律使用 v0.2 split。
 
-### 2. Leakage / Split Risk
-- **Problem**：若依 Frame 進行隨機切分（Random Split），將產生嚴重的時空序列洩漏與背景記憶。
-- **Evidence**：實驗模擬顯示，若採用 Random Split，Test 集中有高達 89.2% 的影格在 Train 集中存在同影片、時間差小於 1 秒的相鄰畫面。
-- **Impact**：模型在離線測試獲得 mAP 0.92 的虛假高分，但在切換至全新 YouTube 測試影片時表現直接驟降至 0.65。
-- **Decision**：嚴格實施以 `video_id` 為單位的 Group Split，確保 Test 集的 3 支影片在訓練集中毫無重疊（Group Overlap = 0）。
+### Finding 2 — Label / Coverage：資料不支持 W2 的「微小目標」主張
+- **Problem**：W2 把問題定義為微小目標偵測，Success Criteria 也針對 < 16×16 px 目標，但資料中的車輛大多是中大型。
+- **Evidence**：7,459 個車輛框中，tiny（< 16²）184 個（2.5%）、small 1,645 個（22.1%）、≥ 32² 有 5,630 個（75.5%），邊長中位數 46.8 px。即使在 130 m，tiny 也只佔 9.5%；60 m 邊長中位數 76.9 px，130 m 為 29.6 px。
+- **Impact**：tiny 只有 184 框，加上切分後 Test 只剩其中一部分，Recall 的信賴區間會很寬，無法驗證 W2 的 tiny 指標。若只看整體 mAP，結果主要反映中大型車輛的表現。
+- **Decision**：主要指標改為整體 vehicle mAP@0.5，並依尺度（tiny/small/medium+）與高度分層回報。tiny 指標標記為「樣本不足、僅供參考」。下一版需要補充更高空或更小目標的資料，或回頭修正 W2 的問題範圍。
 
-### 3. Label / Coverage Finding
-- **Problem**：雖然單一聚焦於 `vehicle` 類別，但不同車型尺度分佈不均，且靜止車輛與行駛車輛熱訊號差異顯著。
-- **Evidence**：高速移動中車輛因排氣管與輪胎摩擦發熱，熱對比度為靜止冷車的 2.8 倍；且微小車輛（$< 16\times16$）漏檢率在 Baseline 測試中高達 38%。
-- **Impact**：模型容易偏向辨識行駛中的高對比車輛，忽略路旁停放的靜態車輛。
-- **Decision**：在資料前處理強化靜態車輛的局部對比度，並在評測時將「移動車輛」與「靜態車輛」分組評估 Recall。
+### Finding 3 — Quality：資料乾淨但類別與日夜不平衡
+- **Problem**：自動檢查沒有缺值和錯誤框，但 Target 內部與條件分布不均。
+- **Evidence**：缺值、重複框、越界框、退化框都是 0；OtherVehicle 只佔車輛框 2.0%；車輛框 65.9% 來自夜間；2020-12-17 的 587 張影像沒有任何車輛；v0.2 Train 只有 617 張含車影像，比 Test 的 497 張多不了多少。
+- **Impact**：模型主要學到夜間小客車。Train 中含車影像偏少，可能限制 YOLO 微調效果。
+- **Decision**：保留無車影像作為負樣本，用來測虛警。評估時分日／夜回報；不對 OtherVehicle 單獨下結論。若 Train 含車影像不足，W4 再評估 Train／Val 日期配置（只能動 Train／Val，Test 鎖定）。
+
+---
+
+## D. Mini Defense
+
+**Q1｜Test set 要模擬哪一種 Unknown？**
+我的 Test set 模擬「未見過的新飛行任務日」，所以採用依日期的 Group／Time Split。具體切法是把最後兩個拍攝日（2021-01-21、01-23，628 張、2,489 個車輛框，日夜都有）當 Test，01-19 當 Val，其餘 6 天當 Train。
+
+**Q2｜為什麼選擇目前的 Split Strategy？**
+因為同一段飛行影片的相鄰影格只差約 2 秒，背景幾乎一樣，不是 i.i.d.。Audit 顯示官方 split 的 Test 影像 100% 和 Train 共用同一段飛行，31.3% 在 Train 裡有相鄰影格，Random Split 也會有同樣問題。部署時無人機一定是在新的一天起飛，所以要按日期整天切開，而且 Test 放最後的日期。驗證結果：flight_group overlap = 0。
+
+**Q3｜最可能造成 Leakage 的欄位或資料流程是什麼？**
+最主要的是資料流程：直接沿用 HIT-UAV 官方 split，同一飛行段會跨 Train／Test。欄位方面，檔名與 `serial` 編碼了拍攝日期順序、高度、日夜，部署時這些標註 metadata 不會以這種形式存在，不能進模型；`DontCare` 是看過答案才畫的區域，只能在評估時忽略，不能拿來遮 Input。
+
+**Q4｜目前 Dataset 最重要的 Coverage Limitation 是什麼？**
+目前資料只涵蓋冬季、非雨天、單一 FLIR 相機、60–130 m 高度下以中大型小客車為主的車輛，沒有夏季與熱交叉時段，也沒有足夠的 < 16×16 px 微小車輛（只有 2.5%）。因此結果不能直接泛化到微小目標偵測、夏季或雨霧天候、或其他相機與 YouTube 壓縮影像。
+
+---
+
+## 附：v0.1 → v0.2 修改紀錄
+
+| v0.1（舊稿） | v0.2 | 依據 |
+| --- | --- | --- |
+| Source：YouTube 16 支影片 3,500 張 | Source：HIT-UAV 2,898 張（真實公開資料） | 舊稿資料不存在；manifest 為隨機生成 |
+| Group key：`video_id` | Group key：`flight_group` proxy＋日期切分 | HIT-UAV 沒有 video_id；serial 區間互不重疊，支持此 proxy |
+| tiny 車輛 38.6% | tiny 車輛 2.5% | Notebook 第 6 節 |
+| Random split 洩漏 89.2%（模擬） | 官方 split：同 group 100%、相鄰影格 31.3% | Notebook 第 8 節 |
+| 刪除 8 個退化框 | 退化框 0，不需刪除 | Notebook 第 5 節 |
+| 浮水印裁切 16 px | 不適用（HIT-UAV 為原始相機輸出，無頻道浮水印） | 資料來源改變 |

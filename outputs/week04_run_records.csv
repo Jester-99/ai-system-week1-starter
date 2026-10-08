@@ -1,0 +1,4 @@
+﻿run_name,method,data_version,split,seed,threshold,feature_set,test_AP50,test_miss_rate,ms_per_frame
+w4_B1_hituav-vehicle-v0.2,B1 Otsu+CCA,hituav-vehicle-v0.2,"date v0.2 (test=20210121,20210123)",42,1.3983,IR pixels only,0.0081,0.9534,6.1
+w4_B2b_hituav-vehicle-v0.2,B2b HOG+GB,hituav-vehicle-v0.2,"date v0.2 (test=20210121,20210123)",42,0.8299,IR pixels only,0.3637,0.5496,86.2
+w4_C_hituav-vehicle-v0.2,C YOLO11n,hituav-vehicle-v0.2,"date v0.2 (test=20210121,20210123)",42,0.2504,IR pixels only,0.7832,0.2929,56.9

@@ -4,3 +4,10 @@ __pycache__/
 .ipynb_checkpoints/
 outputs/*.ipynb
 outputs/*.csv
+
+# Week 3/4: raw images are downloaded by the notebooks, not committed
+data/hit_uav/images/
+data/hit_uav/yolo/
+runs/
+# keep week evidence tables
+!outputs/week0*.csv

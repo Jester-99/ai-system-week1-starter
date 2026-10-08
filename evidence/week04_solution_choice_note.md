@@ -6,33 +6,41 @@
 
 ## Current Evidence
 
-在相同 Dataset、Split、Metric 與 Information Boundary 下，輕量神經網路 YOLOv11n 是目前最好且唯一達到實用標準的方案。
+比較條件：相同 Dataset（`hituav-vehicle-v0.2`）、相同 Split（依日期切分，Test = 2021-01-21、01-23，共 628 frames）、相同 Metric、相同 Information Boundary（只用 IR 像素）。
 
-| method | dataset_information | map50 | tiny_miss_rate | fp_per_frame | runtime_seconds | complexity | note |
-|:---|:---|---:|---:|---:|---:|:---|:---|
-| Otsu + CCA (Baseline 1) | 640×512 gray; group split by video_id seed=42 | 0.2140 | 0.7180 | 8.42 | 0.0042 | Low | Naive baseline; 背景日照雜波引發大量全域過曝虛警。 |
-| Top-Hat + Adaptive (Baseline 2) | 640×512 gray; group split by video_id seed=42 | 0.5280 | 0.4630 | 2.15 | 0.0118 | Low-Mid | Credible baseline; 背景抑制顯著提升，但低對比冷車漏檢嚴重。 |
-| YOLOv11n (Candidate*) | 640×512 gray; group split by video_id seed=42 | 0.8120 | 0.1420 | 0.31 | 0.0086 | Mid | Candidate; 具備幾何語義特徵，大幅降低虛警與微小目標漏檢。 |
+| method | Test AP@0.5 ↑ | Miss Rate ↓ | False alarms / 100 frames ↓ | ms/frame (CPU) | complexity |
+| --- | ---: | ---: | ---: | ---: | --- |
+| B1 Otsu + CCA | 0.0081 | 0.9534 | 244.4 | 6.1 | Low |
+| B2 Local-contrast + HOG + GB | 0.3637 | 0.5496 | 201.4 | 86.2 | Low–Mid |
+| YOLO11n | **0.7832** | **0.2929** | **56.8** | 56.9 | Mid |
+
+- B1 失效的原因：70.6% 的車輛在熱像中比背景暗（冷車）。W2 的「熱點」假設不成立。
+- YOLO11n 在兩個 Test 日期都最好：2021-01-21 的 AP 為 0.810，2021-01-23 為 0.730。
 
 ## Remaining Failure
 
-本次 locked test set 中 YOLOv11n 表現優異，但仍存在少量極端案例失誤：
-1. 長時間熄火且與地表溫差趨近零度（$\Delta T \le 1.5^\circ\text{C}$）的冷車，缺乏足夠熱特徵對比。
-2. YouTube 視訊高壓縮比下引發之區塊效應（Macroblocking），造成超遠景微小車輛邊緣模糊退化。
+YOLO11n 仍然失敗的地方：
+
+- small 車輛（16²–32²）recall 0.539。
+- 30° 斜視角 recall 0.405，130 m 高度 recall 0.491（Failure Case 3）。
+- 建物窗戶、路燈底座等規則紋理造成誤報，另有框位置偏移（Failure Case 4）。
+- 尚未在邊緣裝置驗證 ≥ 30 FPS。
 
 ## Minimum Sufficient Solution
 
-目前選擇輕量神經網路 YOLOv11n 作為 minimum sufficient solution。
-
-理由：兩套傳統 Baseline 在高空微小目標上的漏檢率高達 71.8% 與 46.3%，每影格虛警均超過 2 次，無法支援巡檢決策。YOLOv11n 達到 mAP = 0.8120、微小漏檢率降至 14.2%，且單幀推論僅需 0.0086 秒（116 FPS），顯存低於 800MB，完全符合無人機邊緣運算板卡之即時推論與功耗限制。
+暫定採用 YOLO11n（imgsz 512，Val 選定門檻 0.25）。它是目前唯一接近 W2 Success 的方法，而且在 CPU 上比 B2 更快。
 
 ## Next Candidate
 
-目前不建議升級到更大規模之重型架構（如大型 Vision Transformer 或 RT-DETR），因其參數量增加數倍但帶來的邊際增益有限，反而會破壞邊緣推論延遲。
-下一步應測試微架構改良方案：
-1. **微小目標專用檢測頭（YOLOv11-P2 Head）**：保留高解析度特徵圖以提升 $< 16 \times 16$ 像素微小車輛感知。
-2. **跨影格時序運動熱訊號融合（ByteTrack）**：利用航拍時序關聯性，以極低算力補償單影格微弱熱訊號漏檢。
+下一輪仍然使用 YOLO11n，先處理 Data 和 Decision 層面的問題：
+
+1. 提高輸入解析度到 imgsz 640，或改用 tiling 推論，針對遠景與小目標。
+2. 用 Train 全部無車影格，加上窗戶、路燈底座等紋理 hard negatives，並增加 epochs。
+3. 加入跨影格時間濾波（連續 N 幀都偵測到才觸發警報），降低虛警。
+
+上述都做完後，如果 small 或 30° 子群的 recall 仍然不足，才測試 YOLO11s。
 
 ## Complexity Justification
 
-傳統 Baseline 2 的 mAP 僅 0.5280 且每幀誤報 2.15 次，證明純亮度與空間濾波不足以應對非結構化高空環境。YOLOv11n 提供 +28.4% mAP 的顯著增量 evidence，並將每影格誤報降低 85%（0.31 次），成功跨過 Complexity Gate 檢驗。增加至輕量級神經網路之複雜度完全合理且必要。
+- 從 B2 升級到 YOLO11n 是值得的：AP 增加 42 個百分點，miss rate 下降 26 個百分點，誤報減少約 72%（201 → 57 次／100 frames），而且推論比 B2 更快。
+- 目前不升級到更大模型。剩餘 failure 指向的是解析度、斜視角與 hard negatives，不是模型容量。YOLO11s 的運算量約為 n 的 3 倍，會壓縮邊緣端 30 FPS 的預算。因此只有當它在高風險子群（30°、small）上帶來明顯增益，並且通過延遲測試時，才值得採用。

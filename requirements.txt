@@ -1,3 +1,6 @@
 pandas
 scikit-learn
 ipykernel
+opencv-python-headless
+scikit-image
+ultralytics
