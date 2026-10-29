@@ -1,236 +1,128 @@
-# Week 4 Baseline Report v1.0
+# Week 4 - Baseline Report v1.0
 
 學號：7114029015
-
 姓名：黃柏瑜
-
-> 本報告所有數字來自 `notebooks/week04_baseline.ipynb` 的實際執行輸出（`outputs/week04_*.csv`）。
-
-## 1. Task & Dataset
-
-本週沿用 W2 AI Problem Spec v0.2 與 W3 Dataset Spec v0.2，不重新定義題目或資料。
-
-- **Task**：高空無人機長波紅外線單張影格的車輛偵測（object detection）。
-- **Unit**：單張 640×512 IR 影格。
-- **Input**：單張灰階影格像素。高度、角度、日期、檔名都不進入任何方法。
-- **Target / Label**：`vehicle` 邊界框，由 `Car` + `OtherVehicle` 合併（W3 `vehicle_map_v0.2`）；`DontCare` 區域在評估時忽略。
-- **Dataset version**：`hituav-vehicle-v0.2`，來源為 HIT-UAV `normal_json`。
-- **Split**：沿用 W3 的 Group/Time Split，依 `date_captured` 切分，`flight_group` overlap = 0。
-
-| split | dates | frames | vehicle boxes |
-| --- | --- | ---: | ---: |
-| train | 20201217, 20210114, 0115, 0116, 0118, 0120 | 1,954 | 3,707 |
-| validation | 20210119 | 316 | 1,263 |
-| test（locked） | 20210121, 20210123 | 628 | 2,489 |
-
-Test 車輛的尺度分布：medium+（≥ 32²）1,802、small（16²–32²）674、tiny（< 16²）13。
-
-**本週新發現的 Data Check**：比較每個車輛框內外的平均灰階，**70.6% 的車輛比周圍背景暗**（夜間 84.9%、白天 43.1%）。停放的車在畫面上多半是「冷」的。W2 假設「車輛是熱源亮點」，這在本資料上不成立，直接影響 Baseline 設計。
-
-## 2. Baseline Plan
-
-| Role | Method | 出處 | Why reasonable | Expected weakness |
-| --- | --- | --- | --- | --- |
-| Baseline 1（current / naive） | 全域 Otsu 門檻 + 連通元件（亮像素 = 目標），面積與長寬比範圍取自 Train GT 的第 1–99 百分位 | Otsu (1979)；W2 v0.2 定義的現行 baseline | 熱像儀韌體與地面站常見的「找熱點」做法，零訓練、極便宜，是 W2 已承諾的比較基準 | 只抓亮像素；冷車、日照路面都會出問題 |
-| Baseline 2（credible simple） | 雙極性局部對比候選框 + HOG/幾何特徵 + 分類器 | 背景相減／Top-Hat 類紅外目標偵測（Rivest & Fortin, 1996）＋ HOG（Dalal & Triggs, 2005）＋ Gradient Boosting（Friedman, 2001；scikit-learn HistGradientBoosting） | 「不用深度學習時，合理的人會先試的」經典偵測流程：先用影像處理找候選區，再用 Train 學一個簡單分類器過濾。依據 Data Check，候選框**亮、暗兩個方向都抓**，所以不是故意做差的 strawman | 候選框召回率有上限（Val 約 0.68）；相鄰車輛容易被合成一個框；HOG 對斜視角與遮蔽不穩 |
-| Candidate | YOLO11n（COCO 預訓練，在 Train 上微調 20 epochs） | Ultralytics YOLO11（Jocher & Qiu, 2024）；W2 定義的 AI 方法 | 邊緣端可部署的最小 YOLO，用來檢查深度學習是否有增量價值 | 需要 GPU/NPU 才能達到即時；小目標、斜視角仍可能失敗 |
-
-Baseline 2 有兩個分類器版本：LR 的 Val AP@0.5 = 0.163，GB 的 Val AP@0.5 = 0.324。只依 Validation 選擇，最終採用 **B2b HOG+GB**。
-
-本週不測更大的模型（YOLO11s/m、RT-DETR、Transformer）。W4 的目標是先確認 baseline evidence，以及邊緣端最小夠用的複雜度。
-
-## 3. Fair Comparison / Experiment Spec
-
-- Dataset version = `hituav-vehicle-v0.2`（HIT-UAV normal_json；Car + OtherVehicle → vehicle）
-- Split = Group/Time split by `date_captured`；Seed / Boundary = seed 42（B2 負樣本抽樣、YOLO 訓練）／Train = 6 個較早日期、Val = 20210119、Test = 20210121 + 20210123
-- Baseline 1 = Global Otsu + CCA（hot pixels）
-- Baseline 2 = Bi-polar local-contrast proposals + HOG/geometry + HistGradientBoosting（LR 版本於 Val 淘汰）
-- Primary Metric = vehicle AP@0.5（Test，越高越好）
-- Failure Metric = vehicle Miss Rate = FN / GT（於 Val 選定門檻，越低越好）；輔助指標為 False alarms per 100 frames（越低越好）
-- Threshold policy = 每個方法都在 Validation 上取 F1 最大的 score 門檻；Test 鎖定，不調參
-- Information boundary = 只用單張灰階影格像素；不使用高度、角度、日期、檔名；`DontCare` 只在評估時忽略（與它重疊 ≥ 50% 的預測不計為 FP）
-- Runtime / Cost 記錄方式 = 同一台 2-core CPU（無 GPU），計算每張影格平均 ms，包含偵測與分類、不含讀檔；YOLO 先 warm-up 再計時
-
-其他固定條件：
-
-- **Evaluation unit**：單一車輛框，IoU ≥ 0.5 才算命中，每張影格依分數高低做 greedy matching。
-- **相同 test set**：三個方法使用同一份 628 張 locked test。
-- **訓練資料**：B2 用 Train 全部影格產生的候選框（正樣本全取、負樣本抽 15%）；YOLO 用 Train 中全部 617 張含車影格加 300 張隨機無車影格。這是因為 CPU 訓練時間有限，屬於只動 Train 的設計選擇，**不影響 Test 公平性**。
-
-## 4. Results
-
-Locked Test set（628 frames、2,489 vehicles）：
-
-| Method | Dataset / Information | Primary：Test AP@0.5 ↑ | Failure：Miss Rate ↓ | False alarms / 100 frames ↓ | Recall | Precision | Runtime（ms/frame，CPU） | Complexity | Note |
-| --- | --- | ---: | ---: | ---: | ---: | ---: | ---: | --- | --- |
-| B1 Otsu + CCA | IR pixels only; date split v0.2 | 0.0081 | 0.9534 | 244.4 | 0.047 | 0.070 | 6.1 | Low | W2 current baseline |
-| B2 Local-contrast + HOG + GB | IR pixels only; date split v0.2 | 0.3637 | 0.5496 | 201.4 | 0.450 | 0.470 | 86.2 | Low–Mid | Credible simple baseline |
-| YOLO11n（Candidate） | IR pixels only; date split v0.2 | **0.7832** | **0.2929** | **56.8** | 0.707 | 0.831 | 56.9 | Mid | 20 epochs, imgsz 512 |
-
-Validation AP@0.5：B1 0.0004、B2 0.3242、YOLO11n 0.7186。
-
-**穩定性**：Test 的兩個日期分開計算 AP@0.5。
-
-| Method | 2021-01-21（1,725 vehicles） | 2021-01-23（764 vehicles） |
-| --- | ---: | ---: |
-| B1 | 0.004 | 0.017 |
-| B2 | 0.329 | 0.457 |
-| YOLO11n | 0.810 | 0.730 |
-
-兩天的排名都是 YOLO11n > B2 > B1，差距也遠大於日期間的波動。
-
-**分組 Recall**（在各自的 Val 門檻下）：
-
-| Subgroup | n_gt | B1 | B2 | YOLO11n | YOLO − B2 |
-| --- | ---: | ---: | ---: | ---: | ---: |
-| 冷車（比背景暗） | 1,436 | 0.001 | 0.410 | 0.670 | +0.26 |
-| 熱車（比背景亮） | 1,053 | 0.108 | 0.506 | 0.758 | +0.25 |
-| 夜間 | 1,132 | 0.026 | 0.400 | 0.653 | +0.25 |
-| 白天 | 1,357 | 0.063 | 0.492 | 0.752 | +0.26 |
-| small（16²–32²） | 674 | 0.025 | 0.203 | 0.539 | **+0.34** |
-| medium+（≥ 32²） | 1,802 | 0.054 | 0.546 | 0.774 | +0.23 |
-| tiny（< 16²） | 13 | 0.077 | 0.000 | 0.154 | 樣本太少 |
-| 相機俯角 30° | 610 | 0.018 | 0.159 | **0.405** | +0.25 |
-| 相機俯角 60–90° | 1,139 | 0.06–0.08 | 0.60–0.72 | 0.80–0.91 | +0.14–0.30 |
-| 高度 110 m | 571 | 0.007 | 0.282 | 0.718 | **+0.44** |
-| 高度 130 m | 381 | 0.032 | 0.323 | 0.491 | +0.17 |
-
-Interpretation：
-
-- **B1 幾乎完全失效**（AP 0.008）。原因不是門檻沒調好，而是假設錯了：70.6% 的車是冷的，冷車的 B1 recall 只有 0.001。全域 Otsu 抓到的多是大片建物或路面，被尺寸規則濾掉後就什麼都不剩。
-- **B2 是有意義的比較線**：AP 0.364，冷車 recall 0.410，證明雙極性設計有效；但仍漏掉 55% 的車，每 100 張影格有 201 次誤報。
-- **YOLO11n 在 Primary 與 Failure 指標上都大幅領先**：AP 0.364 → 0.783，miss rate 0.550 → 0.293，誤報 201 → 57 次／100 張。在本次 CPU 上也比 B2 更快（56.9 vs 86.2 ms），因為 B2 每張影格要對約 200 多個候選框算 HOG。
-- **YOLO 仍未完全達到 W2 Success**：
-  - 整體 AP 0.783 ≥ 0.75，有達標。
-  - small 車輛 recall 只有 0.539，30° 斜視角只有 0.405，130 m 只有 0.491。
-  - CPU 上約 17.6 FPS，**尚未在 Jetson 等邊緣裝置驗證 ≥ 30 FPS**。
-
-## 5. Failure Analysis
-
-代表性案例由 notebook 依規則自動挑選，圖片存在 `outputs/week04_failure_cases/`（綠 = 命中、紅 = 漏檢、黃 = 誤報）。
-
-| Case | Method | Unit（frame） | Ground Truth | Prediction | Failure type | Possible cause | Decision impact |
-| --- | --- | --- | --- | --- | --- | --- | --- |
-| 1 | B1 Otsu+CCA | `1_110_30_0_09028.jpg`（夜、110 m、30°） | 13 輛停放車輛，13 輛都比背景暗 | 0 個偵測 | 冷目標全漏（polarity failure） | **Feature／假設錯誤**：停放車輛的引擎已冷，熱像上比柏油暗；Otsu 只切亮像素，亮區是建物與地面大區塊，被尺寸規則濾掉 | 整個停車場被判定「沒有車」，不會觸發任何警報。對應 W2 Failure「連續漏檢」 |
-| 2 | B2 HOG+GB | `1_130_30_0_09965.jpg`（夜、130 m、30°） | 9 輛小型車，大多擠在畫面上方同一排 | 1 命中、8 漏檢、3 誤報（其中一框把相鄰兩車合成一個，另兩框落在暗色長方形建物結構上） | 相鄰目標合併 ＋ 結構誤報 | **Model／Proposal 限制**：局部對比門檻把相鄰暗車連成同一個連通元件，框過大導致 IoU < 0.5；HOG 無法分辨「暗色長方形建物」和「暗色車」。全 Test 中有 70 個 B2 誤報框同時蓋住 ≥ 2 輛車 | 車輛數被低估，同時在無車處報警。地面站人員要花時間確認假警報 |
-| 3 | YOLO11n | `0_100_30_0_08087.jpg`（日、100 m、30°） | 18 輛，多數在畫面遠端的停車場 | 3 命中、15 漏檢、1 誤報 | 斜視角遠景小目標漏檢 | **Data／Resolution**：30° 斜視下遠端車輛只有約 15–30 px，部分被樹遮或被畫面右緣截斷；訓練輸入縮到 512，小目標再被縮小。15 個漏檢中 13 個是 small 或 tiny，且多數其實比背景亮，所以不是 polarity 問題 | 斜視巡檢時遠處車輛看不到。30° 俯角整體 recall 只有 0.405，是 Candidate 最大的剩餘 failure |
-| 4 | YOLO11n | `0_110_30_0_08339.jpg`（日、110 m、30°） | 28 輛（停車場） | 25 命中、3 漏檢、11 誤報 | 規則紋理誤報 ＋ 框偏移 | **Data（缺 hard negatives）＋ Localization**：建物窗戶、路燈底座等方形高對比紋理被當成車（分數 0.27–0.44）；最高分的誤報（0.80、0.70）緊貼在畫面右下的漏檢車旁，屬於框位置偏移造成 IoU < 0.5，不是看錯物體 | 車在畫面中大多有抓到，但每張影格多出約 10 個框。若直接接到警報，會違反 W2「虛警過多迫使飛手關閉系統」的 Failure Criteria |
-
-Failure interpretation：
-
-- **B1 的失敗是假設錯誤，不是調參問題**：冷車占漏檢的大宗。W2 的 Baseline 定義要修正為「雙極性」。
-- **B2 的失敗集中在 proposal 品質**：相鄰合併、結構誤報，而且候選框召回率上限只有約 0.68。
-- **YOLO 的剩餘失敗集中在三類**：small 目標、30° 斜視角遠景、規則紋理誤報。前兩者屬於解析度與資料問題，第三者屬於 hard negative 不足。三者都不直接指向「模型容量不足」。
-- YOLO 漏掉的車中，65.0% 是冷車；冷車占全部 Test 車輛的 57.7%。可見冷車仍略偏難，但已經不是主因。
-
-## 6. Minimum Sufficient Solution
-
-- **Minimum Sufficient Solution**：YOLO11n（imgsz 512、Val 選定門檻 0.25）。這是暫定選擇，目前只有它在本資料上接近 W2 Success。
-- **Evidence**：在相同 Dataset、Split、Metric、Information boundary 下：
-  - Test AP@0.5 = 0.783（B2 0.364、B1 0.008）
-  - Miss Rate = 0.293（B2 0.550）
-  - 誤報 = 56.8 次／100 frames（B2 201.4）
-  - 兩個 Test 日期都是相同排名
-- **Cost / Risk**：
-  - 需要深度學習的訓練與部署流程；本次 CPU 訓練約 1.5 小時。
-  - 模型檔 5.4 MB。
-  - CPU 推論 56.9 ms/frame，比 B2 還快，但仍需在邊緣 GPU/NPU 驗證 ≥ 30 FPS。
-  - 黑盒模型需要監控資料漂移，尤其是季節變化與不同相機。
-- **目前是否需要升級到更複雜的模型（例如 YOLO11s/m、Transformer）**：No。
-- **理由**：剩餘 failure 是 small、斜視角遠景、紋理誤報，原因落在 Data（解析度、hard negatives、訓練量）與 Decision（門檻、時間濾波）。在用同樣的 YOLO11n 補完這些之前，沒有 evidence 顯示問題出在模型容量。
-
-## 7. Solution Choice Note
-
-- **Current evidence**：YOLO11n 在 Primary（AP 0.783 vs 0.364）與 Failure（miss 0.293 vs 0.550）上都明顯優於 credible baseline B2，而且兩個 Test 日期一致。W2 定義的 Otsu baseline 因為 70.6% 的車是冷目標而完全失效。
-- **Remaining failure**：
-  - small 車輛 recall 0.539
-  - 30° 斜視角 recall 0.405
-  - 130 m recall 0.491
-  - 建物窗戶、路燈底座等規則紋理誤報，每 100 張約 57 個
-- **Minimum solution**：YOLO11n（暫定）。
-- **Next candidate**：仍是 YOLO11n，但要先排除 Data 與 Decision 這兩個原因：
-  1. 輸入解析度改為 640，或用 tiling（切片推論）處理遠景小目標。
-  2. 用 Train 全部無車影格加上紋理類 hard negatives，訓練更多 epochs。
-  3. 加入跨影格時間濾波（同一位置連續 N 幀才警報）來壓低虛警。
-
-  只有在上述做完後 small／30° recall 仍明顯不足，才測 YOLO11s，並以相同 split 與 metric 比較。
-- **Justification（Complexity Gate）**：
-  1. Baseline 未達 W2 Success，失敗原因主要是 Data 和 Feature 層面（解析度、斜視角、負樣本）。
-  2. 解析度與 tiling 直接對應 small 與遠景 failure，有機會解決。
-  3. YOLO11s 的運算量約為 n 的 3 倍，會壓縮邊緣端 30 FPS 的預算，必須有集中在高風險子群的增益才值得。
-  4. 可以用同一 split、metric、門檻政策公平測試。
-
-詳細內容另見 `evidence/week04_solution_choice_note.md`。
-
-## 8. Reproducibility / Run Record
-
-- **Notebook**：`notebooks/week04_baseline.ipynb`（已執行並保留輸出；預設 `TRAIN_YOLO=False`，直接載入已訓練權重）
-- **Code**：`src/week04_baselines.py`（資料載入、B1/B2 演算法、共用評估：matching、AP、門檻政策）
-- **Data**：
-  - 標註：`data/hit_uav/normal_json/{train,val,test}.json`
-  - 影像：`data/hit_uav/images/`，notebook 會自動從 HIT-UAV GitHub 下載，不 commit
-- **Model**：`models/week04_yolo11n_hituav_v02.pt`
-  - 起點：COCO 預訓練 `yolo11n.pt`
-  - 設定：20 epochs、imgsz 512、batch 16、seed 42、`deterministic=True`、CPU
-- **Output artifacts**：
-  - 結果：`outputs/week04_results.csv`
-  - 分組 recall：`outputs/week04_subgroup_recall.csv`
-  - 依日期的 AP：`outputs/week04_test_by_date.csv`
-  - Failure cases：`outputs/week04_failure_cases.csv` 與 `outputs/week04_failure_cases/*.jpg`
-  - Run records：`outputs/week04_run_records.csv`（記錄 run_name、data version、split、seed、threshold、feature set、metrics、runtime）
-- **Random seed**：42
-- **Runtime 環境**：2-core x86 CPU，無 GPU；Python 3.13、ultralytics 8.4、scikit-learn、opencv-python-headless、scikit-image
-- **Commit message suggestion**：`Complete Week 4 baseline report`
-
-## 9. Mini Defense
-
-### Q1. 為什麼你的 Baseline 是合理的？以及 Baseline 的出處
-
-我的 Task 是高空 IR 單張影格的車輛偵測，所有方法都只使用同一張灰階影格的像素。
-
-- **Baseline 1：全域 Otsu + 連通元件**
-  - 出處：Otsu (1979)，以及 W2 v0.2 中定義的現行做法。
-  - 合理的原因：「找熱點」是熱像儀與地面站最常見、零訓練成本的方法，也是 W2 已承諾要比較的基準。它的尺寸範圍取自 Train GT，並沒有被故意做弱。
-- **Baseline 2：雙極性局部對比候選框 + HOG + Gradient Boosting**
-  - 出處：紅外目標偵測常用的背景相減／Top-Hat 思路（Rivest & Fortin, 1996）、HOG 特徵（Dalal & Triggs, 2005）、Gradient Boosting（Friedman, 2001）。
-  - 合理的原因：這是「不用深度學習時，合理研究者會先試的」經典流程。我也根據 Data Check（70.6% 的車比背景暗）把候選框改成亮暗兩個方向都抓。
-  - 分類器版本只在 Validation 上選擇（LR 0.163 vs GB 0.324）。
-
-所以 B2 是 credible baseline，不是為了襯托 YOLO 的 strawman。
-
-### Q2. 複雜模型增加的效益主要集中在哪些案例？
-
-相較 B2，YOLO11n 的 AP 從 0.364 提升到 0.783，miss rate 從 0.550 降到 0.293，誤報從每 100 張 201 次降到 57 次。
-
-- **增益最大的子群**：
-  - small 車輛（16²–32²）：recall 0.203 → 0.539（+0.34）
-  - 110 m 高度：0.282 → 0.718（+0.44）
-  - 冷車：0.410 → 0.670（+0.26）
-  - 夜間：0.400 → 0.653（+0.25）
-
-  這些正是 B2 的候選框與 HOG 處理不好的案例：相鄰合併、暗色結構誤報。
-- **仍未解決**：30° 斜視角遠景（recall 0.405）、130 m（0.491）、tiny 目標（13 個只抓到 2 個），以及建物窗戶類的紋理誤報（Failure Case 3、4）。
-
-因此，增益的決策價值在於：漏檢與誤報同時大幅下降，從「不可用」變成「接近 W2 Success」。剩下的風險集中在斜視遠景與小目標。
-
-### Q3. 如果複雜模型只提升 1–2%，你還會選它嗎？為什麼？
-
-先說明：本週 YOLO11n 相對 B2 的提升是 +42 個 AP 百分點，不是 1–2%，所以本週選擇 YOLO11n 是有 evidence 的。
-
-至於下一步是否要從 YOLO11n 升到 YOLO11s：
-
-- **如果只是整體 AP 提升 1–2%，我不會選。** YOLO11s 的運算量約為 n 的 3 倍，會吃掉邊緣端 30 FPS 的延遲預算，也會增加功耗與發熱。W2 Failure Criteria 明確寫到「推論 < 15 FPS 即為系統失敗」，對搜救或巡檢來說，畫面卡頓的代價比 1–2% AP 更大。
-- **我會改選的條件**：1–2% 的整體提升如果集中在高風險子群，例如 30° 斜視角或 small 車輛的 recall 明顯上升（這些是目前 miss rate 最高的地方）；或者連續漏檢的影格數下降，而且在 Jetson 上仍能 ≥ 30 FPS。在這種情況下，增益直接降低真正的 Failure Cost，我會選它。
-
-所以決策看的是「增益落在哪裡」以及「延遲成本是否在預算內」，不是只看平均分數。
+專題名稱：劣質空拍紅外線影片移動目標物偵測系統
 
 ---
 
-### References
+## 1. Task / Dataset（沿用 W2 & W3 規格）
 
-- Otsu, N. (1979). A threshold selection method from gray-level histograms. *IEEE Trans. Systems, Man, and Cybernetics*, 9(1), 62–66.
-- Rivest, J.-F., & Fortin, R. (1996). Detection of dim targets in digital infrared imagery by morphological image processing. *Optical Engineering*, 35(7).
-- Dalal, N., & Triggs, B. (2005). Histograms of oriented gradients for human detection. *CVPR*.
-- Friedman, J. H. (2001). Greedy function approximation: A gradient boosting machine. *Annals of Statistics*, 29(5).
-- Jocher, G., & Qiu, J. (2024). Ultralytics YOLO11. https://github.com/ultralytics/ultralytics
-- Suo, J. et al. (2023). HIT-UAV: A high-altitude infrared thermal dataset for UAV-based object detection. *Scientific Data*, 10, 227.
+- **Task 定義（承接 W2 AI Problem Spec v0.2）**：
+  - **Unit of Analysis**：同一分鏡（背景穩定連續片段）內的一張紅外線影格（原始解析度 $600 \times 450$，YOLOv7 輸入縮放為 $640 \times 640$）。
+  - **Input**：當前影格與同分鏡前 $6$ 張影格（共 $k=7$ 張計算時間標準差 SD）及前 $1$ 張影格（第 $t-1 \to t$ 張計算 Farnebäck 稠密光流幅度），經 $2$ 次開運算去雜訊、$4$ 次膨脹與正規化後合成之三通道影像（R：對比拉伸 IR、G：SD 圖、B：光流幅度圖）。
+  - **Target & Output**：預測單一類別 `0: 目標物` 之邊界框 `[x_center, y_center, width, height]`（評估匹配標準 $\text{IoU} = 0.1$），最終輸出包含 `scene_motion`（動態／非動態標記）、`yolo_confidence` 與 Inception-V4 之 `is_target_prob`。
+- **Dataset Version & 存放管理（承接 W3 Dataset Spec v0.2）**：
+  - **版本**：`ir-mtd-v0.2`（源自碩論 YouTube 夜間／低能見度空拍紅外線影片資料集，共 $62$ 個分鏡）。
+  - **本機外部目錄管理**：原始影片、$2,852$ 張原始 IR 影格、$2,531$ 張三通道影格與 YOLO 標註檔存放於本機外部實驗實驗環境（配備 Intel Core i7-9700K、NVIDIA GeForce RTX 2080 Ti、32 GB RAM）。因影音圖檔與權重體積龐大且正進行實驗實驗，依 Git 規範不複製入庫，本報告與 `notebooks/week04_baseline.ipynb` 直接整理自本機實驗環境之測試評估數據，並匯出 `outputs/week04_baseline_metrics.csv`。
+- **Split 設定**：
+  - **實驗原切分**：$50$ 個訓練分鏡（原始 IR $2,454$ 張／三通道 $2,209$ 張）vs. $12$ 個獨立測試分鏡（原始 IR $398$ 張／三通道 $322$ 張，其中 $76$ 張因無光流或分鏡前 $6$ 幀窗口不足而缺失）。
+  - **v0.2 修正切分規則**：以來源影片 `video_id` 進行 Group Split，鎖定 $12$ 個測試分鏡為 Test，並將 $50$ 個訓練分鏡拆為 $40$ 個 Train 分鏡與 $10$ 個 Validation 分鏡（`seed = 42`），隔離閾值調優。
+
+---
+
+## 2. Baseline Plan（階層式對照基準設計）
+
+為區分「模型架構演進」、「時序運動特徵（SD＋光流）」與「後兩階段過濾分類（$2^\circ$ 鏡頭過濾＋Inception-V4）」各自的真實增益，本研究建立以下 $4$ 層對照基準：
+
+| 代號 | 模型／方法名稱 | 角色定位 | 輸入資訊條件 | 閾值設定 ($\text{conf}, \text{IoU}$) | 出處與選擇理由 |
+| --- | --- | --- | --- | --- | --- |
+| **B0** | 背景相減法（Background Subtraction, BS） | 傳統規則基準（No-DL） | 連續 IR 影格像素差 $|I_t - B_t| > \theta$ | 像素灰階差門檻 $\theta$ | 運算極快但對熱雜訊與鏡頭移動極度敏感，用作問題下限對照 |
+| **B1** | **YOLOv7（僅原始 IR 單通道）** | **Simple Baseline（單幀同模型基準）** | 單幀原始 IR 灰階圖（$640 \times 640$） | $(0.1, 0.1)$ | 實驗記錄 （亦包含同條件之 YOLOv3、YOLOv4、YOLOv5）；完全不使用跨幀資訊與後處理，衡量單純單幀 CNN 的表現 |
+| **B2a** | **YOLOv5s-THSE ／ YOLOv10（僅原始 IR）** | **Credible Baseline 1（同資料進階架構基準）** | 單幀原始 IR 灰階圖（$640 \times 640$） | $(0.1, 0.1)$ | 實驗記錄 引用之紅外線專用注意力模型（Liang et al., *Sci Rep* 2023，結合 CSP-SE 與多頭注意力）及最新單階段架構 YOLOv10；驗證「不加光流、僅靠先進單幀網路結構」能達到的上限 |
+| **B2b** | **三通道 YOLOv7（IR＋SD＋光流）** | **Credible Baseline 2（同資訊條件運動基準）** | 三通道融合圖（R：IR、G：前 $7$ 幀 SD、B：光流幅度） | $(0.1, 0.1)$ 及高召回 $(0.05, 0.05)$ | 實驗記錄 4-6、4-7 核心對照（另含雙特徵對照 `YOLOv7 + IR + SD`）；與最終系統擁有**完全相同的輸入資訊**，用以嚴格檢驗後兩階段（鏡頭過濾＋Inception-V4）是否真的有增量價值 |
+| **C1** | **實驗完整三階段系統（Proposed MTD）** | **Complex Candidate（目標複雜系統）** | 三通道融合圖 ＋ $2^\circ$ 鏡頭移動過濾 ＋ Inception-V4（$299 \times 299$） | Stage 1 $(0.05, 0.1)$ ＋ $\theta_{\text{SD}}=15, \theta_{\text{OF}}=1, \epsilon=2^\circ$ | 最終建議方案；檢驗多階段串聯之收益是否足以覆蓋額外算力與誤刪代價 |
+
+---
+
+## 3. Fair Comparison & Results（公平比較與指標結果）
+
+### 3.1 評估指標定義
+1. **Primary Metric（主指標）**：**影格層級物件偵測 $\text{F1-score}$（$\text{IoU} = 0.1$）**（綜合衡量 Precision 與 Recall 之平衡表現）。
+2. **Failure-oriented Metrics（失敗導向驗收指標，承接 W2 Failure Criteria）**：
+   - **動態影像 Precision（Dynamic Frame Precision）**：W2 規定完整系統於鏡頭移動之動態影像 Precision 必須優於 `B1`（$43.84\%$），否則算失敗。
+   - **鏡頭過濾真目標誤刪率（TP Wrong Deletion Rate）**：W2 規定第二階段過濾對真目標（TP）之誤刪率不得高於 $2^\circ$ 設定之 $5.74\%$（$22 / 383$）。
+   - **最差子場景切片 Recall（Worst Sub-slice Recall）**：W2 規定任一子場景 Recall 低於整體參考線 $80.5\%$ 即標記為未達標。
+   - **全測試集 $398$ 張公平加權 $\text{F1}$（Fair Full-Test F1 with Fallback）**：消除三通道丟棄 $76$ 張無光流影格（$19.1\%$）之存活者偏差，將缺失幀退回 `B1` 推論後計算全集 $398$ 張表現。
+
+### 3.2 整體測試集與失敗導向指標比較表
+
+| 模型／方法 | 輸入特徵 | 評估影格數 | Precision (%) | Recall (%) | **Primary: F1 (%)** | **Fail 1: 動態影像 P (%)** | **Fail 2: 最差切片 R (%)** | **Fail 3: 過濾誤刪 TP (%)** | **Fair 398 全集 F1 (%)** |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| `B1_Raw_YOLOv3`（文獻對照） | 原始 IR | $398$ | $51.2$ | $27.7$ | $36.0$ | — | — | $0.0$ | $36.0$ |
+| `B1_Raw_YOLOv5`（文獻對照） | 原始 IR | $398$ | $53.6$ | $30.1$ | $38.6$ | — | — | $0.0$ | $38.6$ |
+| **`B1_Raw_YOLOv7`（Simple Baseline）** | 原始 IR | $398$ | $56.4$ | $30.3$ | **$39.4$** | $43.84$ | $37.2$（小目標單純） | $0.0$ | **$39.4$** |
+| **`B2a_YOLOv10`（Credible 架構基準）** | 原始 IR | $398$ | $71.9$ | $45.9$ | **$56.0$** | **$82.85$** | $43.9$（小目標複雜） | $0.0$ | **$56.0$** |
+| **`B2a_YOLOv5s-THSE`（Credible 注意力基準）** | 原始 IR | $398$ | $67.0$ | $56.3$ | **$61.2$** | $60.08$ | $44.7$（小目標單純） | $0.0$ | **$61.2$** |
+| `B2b_YOLOv7_IR+SD`（雙特徵消融） | IR＋SD | $322$ | $66.7$ | $33.9$ | $45.0$ | — | $40.7$（小目標單純） | $0.0$ | $43.9$ |
+| **`B2b_YOLOv7_3Ch`（Credible 同資訊 @0.1）** | IR＋SD＋光流 | $322$ | $75.9$ | $44.8$ | **$56.5$** | $43.43$ | $43.4$（小目標單純） | $0.0$ | **$53.1$** |
+| `B2b_YOLOv7_3Ch_HighRecall`（Stage 1 @0.05） | IR＋SD＋光流 | $322$ | $32.8$ | **$88.1$** | $47.8$ | $30.91$（FP 856） | — | $0.0$ | $46.2$ |
+| **`C1_Full_3Stage`（實驗完整三階段系統）** | 三通道＋$2^\circ$過濾＋IncV4 | $322$ | **$90.5$** | $80.5$ | **$85.2$** | **$81.60$** | **$64.5$（未達 $80.5\%$）** | **$5.74$（$22/383$）** | **$76.9$** |
+
+### 3.3 六大子場景切片（Sub-slices）細部比較表
+
+| 子場景切片（Sub-slice） | 局部 $\text{SCR}$ | `B1_Raw_YOLOv7` (P / R / F1) | `B2b_YOLOv7_3Ch` (P / R / F1) | `B2a_YOLOv5s-THSE` (P / R / F1) | `B2a_YOLOv10` (P / R / F1) | `C1_Full_3Stage` (P / R / F1) | 診斷結論 |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| **1. 靜態目標物** | — | $44.2 / 52.3 / 47.9$ | $28.9 / 63.6 / 39.7$ | $96.9 / 50.0 / 66.0$ | $100 / 48.4 / 65.2$ | **$100 / 78.6 / 88.0$** | 三通道單階段 P 暴跌至 $28.9\%$；靠後兩階段拉回，但刪 $11$ 框致 R $< 80.5\%$ |
+| **2. 動態目標物** | — | $43.8 / 78.3 / 56.2$ | $43.4 / 78.8 / 56.0$ | $60.1 / 63.8 / 61.9$ | $82.9 / 50.2 / 62.6$ | **$81.6 / 93.7 / 87.2$** | 完整系統主力受益區（F1 較同資訊基準提升 $+31.2$ 個百分點） |
+| **3. 多目標小物件＋複雜背景** | $0.43$ | $45.6 / 53.9 / 49.4$ | $60.2 / 68.6 / 64.1$ | $87.5 / 60.5 / 71.5$ | $66.7 / 43.9 / 52.8$ | **$94.2 / 82.3 / 87.8$** | 完整系統主力受益區（高雜訊下 F1 較 THSE 高 $+16.3$ 個百分點） |
+| **4. 多目標小物件＋單純背景** | $2.54$ | $48.6 / 37.2 / 42.2$ | $62.8 / 43.4 / 51.3$ | $42.0 / 44.7 / 43.1$ | $89.2 / 47.6 / 62.1$ | **$90.4 / 64.5 / 75.2$** | **全系統最弱切片**：Recall 僅 $64.5\%$，未達 W2 驗收參考線 $80.5\%$ |
+| **5. 少目標大物件＋複雜背景** | $0.43$ | $34.1 / 72.4 / 46.4$ | $61.2 / 88.2 / 72.3$ | **$77.3 / 100 / 87.2$** | $70.8 / 100 / 82.9$ | $62.2 / 100 / 76.7$ | **複雜系統退化區**：鏡頭與大目標同動，C1 表現反輸單幀 THSE ($-10.5\%$) 與 v10 |
+| **6. 少目標大物件＋單純背景** | $2.54$ | $54.6 / 51.2 / 52.9$ | $69.1 / 70.9 / 70.0$ | $97.5 / 100 / 98.7$ | $75.4 / 89.6 / 81.9$ | **$100 / 100 / 100.0$** | 理想上限場景（單幀 THSE 已達 $98.7\%$，複雜管線邊際效益極小） |
+
+---
+
+## 4. Failure Analysis（代表性失敗案例分析）
+
+以下由本機實驗紀錄與實驗混淆矩陣中整理出 $4$ 筆具代表性的失敗案例：
+
+### Case 1：鏡頭移動導致動態影像背景假警報氾濫（Stage 1 & Stage 2 False Positives）
+- **現象與證據**：為避免第一階段漏檢微小目標，系統將 YOLOv7 信心度與 IoU 閾值下調至 $0.05$，雖使 Recall 達 $88.1\%$，但在動態影像中產出高達 **$856$ 筆背景誤檢（FP）**（真陽性 TP 僅 $383$ 筆，Precision 暴跌至 $30.91\%$）。即使啟動第二階段 $2^\circ$ 光流方向過濾，也僅能濾除 $134$ 筆 FP（佔 $15.65\%$），仍有 **$722$ 筆背景誤判框**流入第三階段。
+- **可能原因**：無人機高空飛行時鏡頭平移或轉向，使全畫面靜止地物產生全域光流與高像素標準差（G、B 通道全面發亮）；且因地表紋理不均與 Farnebäck 區域視窗平滑效應，許多背景區塊的平均光流角度與全圖均值差距超過 $2^\circ$（加上公式 3-16 對 $0^\circ \sim 360^\circ$ 直接取算術平均在 $0^\circ/360^\circ$ 交界處會失真），導致簡單角度差規則無法攔截。
+
+### Case 2：鏡頭移動過濾機制誤刪「靜止或極慢速真目標」（Stage 2 False Negatives）
+- **現象與證據**：在動態影像中，即使採用最保守的 $\epsilon = 2^\circ$ 容忍度，過濾機制仍**誤刪了 $22$ 筆真目標（TP 損失 $5.74\%$）**；若放寬至 $5^\circ$ 或 $10^\circ$，誤刪數更飆升至 $61$ 筆（$15.93\%$）與 $96$ 筆（$25.07\%$）。而在「靜態目標物」子實驗（表 4-15）中，完整系統刪除了 $11$ 個框，導致 Recall 停留在 **$78.6\%$**（低於 W2 參考線 $80.5\%$）。
+- **可能原因**：當地面軍車處於停放狀態或移動速度極慢，而無人機鏡頭正在移動時，目標物在畫面中的像素位移完全來自鏡頭運動，其框內光流方向 $\bar{\theta}_{\text{box}, i}$ 與全圖背景光流方向 $\bar{\theta}_{\text{global}}$ 高度一致（差值 $< 2^\circ$），因而被公式 (3-18) 誤判為背景運動並直接永久剔除，第三階段 Inception-V4 也無從救回。
+
+### Case 3：「多目標小物件＋單純背景」嚴重漏檢（Stage 1 Feature Erosion & Quantization Loss）
+- **現象與證據**：在「多目標小物件＋單純背景（平均 $\text{SCR} = 2.54$）」切片中，單幀 `B1` Recall 僅 $37.2\%$，加入三通道 `B2b` 後 Recall 僅微升至 $43.4\%$，即便是完整三階段系統 `C1`，最終 Recall 也僅達 **$64.5\%$**（距離整體參考線 $80.5\%$ 短少 $16.0$ 個百分點，為所有子實驗最低）。
+- **可能原因**：① 目標在畫面佔比極小（僅數個像素），前處理執行**連續 $2$ 次形態學開運算（先侵蝕 $2$ 次）**在消除雜訊時一併抹除了微小目標的微弱熱源輪廓；② 高空遠距離慢速小目標於相鄰兩幀（$1/30$ 秒）間的位移常小於 $1$ 像素，而公式 (3-6) 將光流幅度直接取整數 `int(M(x,y))` 轉灰階，導致次像素位移被直接截斷為 $0$，運動特徵通道失效。
+
+### Case 4：「少目標大物件＋複雜背景」鏡頭與目標同步移動致 Precision 崩跌（Co-moving Interference）
+- **現象與證據**：在「少目標大物件＋複雜背景（平均 $\text{SCR} = 0.43$）」切片中，單階段單幀模型 `B2a_YOLOv5s-THSE` 與 `YOLOv10` 分別達到 F1 **$87.2\%$**（P $77.3\%$、R $100\%$）與 **$82.9\%$**；然而實驗完整三階段系統 `C1` 的 Precision 卻跌至 **$62.2\%$**（F1 僅 $76.7\%$），表現明顯劣於不加光流的單幀注意力模型。
+- **可能原因**：在此場景中鏡頭與大型目標同時移動（如無人機跟拍行進中之裝甲車），導致全圖與預測框內的平均標準差及光流值同步偏高，背景熱雜訊與目標邊界在 $4$ 次膨脹後嚴重重疊；不僅 $2^\circ$ 規則過濾無法分離兩者，連裁切後的 $299 \times 299$ 三通道子影像也因藍綠通道（光流／SD）大面積飽和，使 Inception-V4 將複雜背景誤分類為目標。
+
+---
+
+## 5. Solution Choice Note（方案取捨與下一步決策）
+
+### 5.1 目前的 Minimum Sufficient Solution（最低足夠方案）
+- **方案配置**：**單階段三通道 YOLOv7（`B2b_YOLOv7_3Ch`）＋ 光流缺失自動退回單幀原始 IR 模型（`B1`）之 Fallback 機制**（若追求純單幀輕量部署，則以單階段注意力架構 **`B2a_YOLOv5s-THSE`** 作為單幀最低足夠方案）。
+- **理由**：
+  1. `B2b_YOLOv7_3Ch` 在不修改 YOLOv7 網路結構、不增加二次分類推論延遲的前提下，僅靠前處理融合 7 幀標準差與光流圖，即可將單幀 F1 由 `B1` 的 $39.4\%$ 提升至 **$56.5\%$**（Precision 由 $56.4\%$ 升至 $75.9\%$），完全滿足 W2 Technical 第一階段成功條件。
+  2. `B2a_YOLOv5s-THSE` 甚至不需計算跨幀光流（零樣本流失、$100\%$ 覆蓋全部 $398$ 張測試影格），單靠通道與空間注意力模組即可在原始 IR 上達到 **F1 $61.2\%$**，在「大目標單純／複雜背景」切片更達 F1 $98.7\%$ 與 $87.2\%$，完美符合機載即時推論（$\le 33\text{ ms}$）需求。
+
+### 5.2 是否真的需要更複雜的方法（三階段串聯架構 `C1`）？
+- **判斷**：**僅在「鏡頭劇烈晃動之動態影像」與「多目標小物件＋複雜背景（$\text{SCR}=0.43$）」兩個特定高干擾場景下需要後段過濾與二次確認，但不宜無條件全場景啟用現行三階段管線。**
+- **證據支持**：
+  - 在「動態目標物」（F1 $+31.2\%$）與「多目標小物件＋複雜背景」（F1 $+23.7\%$ vs. `B2b`、$+16.3\%$ vs. `THSE`）中，單階段模型無法抑制鏡頭移動造成的假警報（FP 高達 $856$ 筆），此時後兩階段將 Precision 拉回 $81.6\% \sim 94.2\%$ 具有不可替代的決策價值。
+  - 然而，現行 `C1` 架構把第一階段閾值硬降到 $0.05$ 再將單幀數個至十數個候選框逐一縮放為 $299 \times 299$ 送入龐大的 Inception-V4，不僅在「少目標大物件＋複雜背景」因運動特徵重疊反輸給單階段 `THSE`（F1 $76.7\%$ vs. $87.2\%$），更帶來極高的串聯推論延遲與 $5.74\%$ 的真目標過濾誤刪率。
+
+### 5.3 下一個值得測試的 Candidate 與理由
+- **Next Candidate**：**「三通道時序輸入 ＋ 單階段輕量注意力偵測器（如 YOLOv5s-THSE / YOLOv10）＋ 雙向光流正餘弦向量補償過濾（取代 $2^\circ$ 算術平均與笨重的 Inception-V4）」**。
+- **選擇理由**：
+  1. **結合空間注意力與時序特徵**：表 4-7 證明 `YOLOv5s-THSE` 在單幀空間熱特徵擷取遠優於原始 YOLOv7（F1 $61.2\%$ vs. $39.4\%$），將三通道（IR＋SD＋光流）改餵入具備注意力機制的單階段模型，有望直接解決「多目標小物件＋單純背景」Recall 偏低（$64.5\%$）的瓶頸，且省去第三階段 Inception-V4 的重複卷積開銷。
+  2. **修正數學失真與次像素截斷**：將公式 (3-16) 的角度算術平均改為單位向量平均 $\text{atan2}(\sum \sin\theta, \sum \cos\theta)$ 以消除 $0^\circ/360^\circ$ 交界失真，並保留光流浮點數正規化後再轉 $8\text{-bit}$，避免慢速小目標位移被取整數歸零。
+
+---
+
+## 6. Mini Defense（三題精簡回答）
+
+1. **Q1：為什麼你的 Baseline 是合理的？以及 Baseline 的出處？**
+   - **回答**：所有 Baseline 數據皆出自碩論《劣質空拍紅外線影片移動目標物偵測系統》第 4.3～4.5 節（表 4-6、4-7、4-14），涵蓋同模型單幀基準 `YOLOv7 (原始 IR)`（F1 $39.4\%$）、同資料文獻進階架構 `YOLOv5s-THSE`（Liang et al., *Sci Rep* 2023，F1 $61.2\%$）與 `YOLOv10`（F1 $56.0\%$），以及**同資訊條件**之 `三通道 YOLOv7`（F1 $56.5\%$）；能嚴格控制變數，拆解出「時序運動通道（$+17.1\%$ F1）」與「後兩階段過濾分類（$+28.7\%$ F1）」各自的真實貢獻。
+
+2. **Q2：複雜模型增加的效益主要集中在哪些案例？**
+   - **回答**：效益高度集中在**「鏡頭移動之動態目標場景」**（Precision 由單階段三通道的 $43.43\%$ 躍升至 $81.6\%$、Recall 達 $93.7\%$，表 4-16）以及**「多目標小物件＋複雜背景（局部 $\text{SCR}=0.43$）」**（F1 由三通道基準的 $64.1\%$ 與 THSE 的 $71.5\%$ 大幅提升至 $87.8\%$，表 4-17），證明後段過濾與分類主要用於壓制鏡頭晃動與高雜訊地表所引發的假警報。
+
+3. **Q3：如果複雜模型只提升 1–2%，你還會選它嗎？為什麼？**
+   - **回答**：**絕對不選**；因為完整三階段系統需先將 YOLOv7 閾值降至 $0.05$（產生大量候選框），再逐框裁切放大為 $299 \times 299$ 執行 Inception-V4 二次推論，不僅大幅增加 GPU 延遲（威脅 W2 單幀中位數 $\le 33\text{ ms}$ 即時門檻）、引入 $5.74\%$ 的真目標過濾誤刪風險，且 $1\sim 2\%$ 的差距完全落在 W2 設定的重現容忍度（$\pm 5$ 個百分點）內，在工程維護與實戰風險上完全不划算（例如在「少目標大物件＋單純背景」中單階段 `YOLOv5s-THSE` 已達 F1 $98.7\%$，即應直接採用單階段模型）。
